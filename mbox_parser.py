@@ -2,6 +2,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from email_reply_parser import EmailReplyParser
 from email.utils import parsedate_tz, mktime_tz
+from dateutil import tz
 
 import ast
 import datetime
@@ -16,15 +17,23 @@ import time
 import unicodecsv as csv
 
 # converts seconds since epoch to mm/dd/yyyy string
-def get_date(second_since_epoch, date_format):
+
+
+def get_date(second_since_epoch, date_format, as_utc):
     if second_since_epoch is None:
         return None
     time_tuple = parsedate_tz(email["date"])
     utc_seconds_since_epoch = mktime_tz(time_tuple)
-    datetime_obj = datetime.datetime.fromtimestamp(utc_seconds_since_epoch)
+    if as_utc.lower() == "true" or as_utc.lower() is True:
+        datetime_obj = datetime.datetime.utcfromtimestamp(
+            utc_seconds_since_epoch)
+    else:
+        datetime_obj = datetime.datetime.fromtimestamp(utc_seconds_since_epoch)
     return datetime_obj.strftime(date_format)
 
 # clean content
+
+
 def clean_content(content):
     # decode message from "quoted printable" format
     content = quopri.decodestring(content)
@@ -32,12 +41,15 @@ def clean_content(content):
     # try to strip HTML tags
     # if errors happen in BeautifulSoup (for unknown encodings), then bail
     try:
-        soup = BeautifulSoup(content, "html.parser", from_encoding="iso-8859-1")
+        soup = BeautifulSoup(content, "html.parser",
+                             from_encoding="iso-8859-1")
     except Exception as e:
         return ''
     return ''.join(soup.findAll(text=True))
 
 # get contents of email
+
+
 def get_content(email):
     parts = []
 
@@ -51,16 +63,20 @@ def get_content(email):
         if content is None:
             part_contents = ""
         else:
-            part_contents = EmailReplyParser.parse_reply(clean_content(content))
+            part_contents = EmailReplyParser.parse_reply(
+                clean_content(content))
 
         parts.append(part_contents)
 
     return parts[0]
 
 # get all emails in field
+
+
 def get_emails_clean(field):
     # find all matches with format <user@example.com> or user@example.com
-    matches = re.findall(r'\<?([a-zA-Z0-9_\-\.]+@[a-zA-Z0-9_\-\.]+\.[a-zA-Z]{2,5})\>?', str(field))
+    matches = re.findall(
+        r'\<?([a-zA-Z0-9_\-\.]+@[a-zA-Z0-9_\-\.]+\.[a-zA-Z]{2,5})\>?', str(field))
     if matches:
         emails_cleaned = []
         for match in matches:
@@ -69,6 +85,7 @@ def get_emails_clean(field):
         return sorted(unique_emails, key=str.lower)
     else:
         return []
+
 
 # entry point
 if __name__ == '__main__':
@@ -101,18 +118,27 @@ if __name__ == '__main__':
         blacklist_domains = []
         if os.path.exists(".blacklist"):
             with open('.blacklist', 'r') as blacklist:
-                blacklist_domains = [domain.rstrip() for domain in blacklist.readlines()]
+                blacklist_domains = [domain.rstrip()
+                                     for domain in blacklist.readlines()]
 
         # create CSV with header row
         writer = csv.writer(export_file, encoding='utf-8')
-        writer.writerow(["flagged", "date", "description", "from", "to", "cc", "subject", "content", "time (minutes)"])
+        combine_to_cc = os.getenv("COMBINE_TO_CC").lower()
+        if combine_to_cc == "true" or combine_to_cc is True:
+            writer.writerow(["Date", "From", "To", "Subject", "Content"])
+        else:   
+            writer.writerow(["Date", "From", "To", "CC", "Subject", "Content"])
+
+        # writer.writerow(["flagged", "Date", "description", "From", "To", "CC", "Subject", "Content", "time (minutes)"])
+
 
         # create row count
         row_written = 0
 
         for email in mailbox.mbox(mbox_file):
             # capture default content
-            date = get_date(email["date"], os.getenv("DATE_FORMAT"))
+            date = get_date(email["date"], os.getenv(
+                "DATE_FORMAT"), os.getenv("UTC"))
             sent_from = get_emails_clean(email["from"])
             sent_to = get_emails_clean(email["to"])
             cc = get_emails_clean(email["cc"])
@@ -120,14 +146,16 @@ if __name__ == '__main__':
             contents = get_content(email)
 
             # apply rules to default content
-            row = rules.apply_rules(date, sent_from, sent_to, cc, subject, contents, owners, blacklist_domains)
+            row = rules.apply_rules(
+                date, sent_from, sent_to, cc, subject, contents, owners, blacklist_domains, combine_to_cc)
 
             # write the row
             writer.writerow(row)
             row_written += 1
 
         # report
-        report = "generated " + export_file_name + " for " + str(row_written) + " messages"
+        report = "generated " + export_file_name + \
+            " for " + str(row_written) + " messages"
         report += " (" + str(rules.cant_convert_count) + " could not convert; "
         report += str(rules.blacklist_count) + " blacklisted)"
         print(report)
