@@ -11,12 +11,17 @@ import ntpath
 import os
 import quopri
 import re
-import rules
 import sys
 import time
 import unicodecsv as csv
 
 # converts seconds since epoch to mm/dd/yyyy string
+
+ISO8601 = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def negative_or_empty(x):
+    return str(x).lower() in ["0", "false", "no", "none", ""]
 
 
 def get_date(second_since_epoch, date_format, as_utc):
@@ -24,11 +29,16 @@ def get_date(second_since_epoch, date_format, as_utc):
         return None
     time_tuple = parsedate_tz(email["date"])
     utc_seconds_since_epoch = mktime_tz(time_tuple)
-    if as_utc.lower() == "true" or as_utc.lower() is True:
+    if not negative_or_empty(as_utc):
+        # if as_utc.lower() == "true" or as_utc.lower() is True:
         datetime_obj = datetime.datetime.utcfromtimestamp(
             utc_seconds_since_epoch)
     else:
         datetime_obj = datetime.datetime.fromtimestamp(utc_seconds_since_epoch)
+
+    if negative_or_empty(date_format):
+        date_format = ISO8601
+
     return datetime_obj.strftime(date_format)
 
 # clean content
@@ -106,8 +116,8 @@ if __name__ == '__main__':
         owners = []
         if os.path.exists(".owners"):
             with open('.owners', 'r') as ownerlist:
-                contents = ownerlist.read()
-                owner_dict = ast.literal_eval(contents)
+                body = ownerlist.read()
+                owner_dict = ast.literal_eval(body)
             # find owners
             for owners_array_key in owner_dict:
                 if owners_array_key in file_name:
@@ -122,33 +132,49 @@ if __name__ == '__main__':
                                      for domain in blacklist.readlines()]
 
         # create CSV with header row
+        headers = ["DATE", "SENT_FROM", "SENT_TO", "CC", "SUBJECT", "Body"]
+        headers_txt = [
+            os.getenv(x) for x in headers if not negative_or_empty(os.getenv(x))]
+
         writer = csv.writer(export_file, encoding='utf-8')
-        combine_to_cc = os.getenv("COMBINE_TO_CC").lower()
-        if combine_to_cc == "true" or combine_to_cc is True:
-            writer.writerow(["Date", "From", "To", "Subject", "Content"])
-        else:   
-            writer.writerow(["Date", "From", "To", "CC", "Subject", "Content"])
 
-        # writer.writerow(["flagged", "Date", "description", "From", "To", "CC", "Subject", "Content", "time (minutes)"])
-
+        writer.writerow(headers_txt)
 
         # create row count
         row_written = 0
 
         for email in mailbox.mbox(mbox_file):
             # capture default content
-            date = get_date(email["date"], os.getenv(
-                "DATE_FORMAT"), os.getenv("UTC"))
-            sent_from = get_emails_clean(email["from"])
-            sent_to = get_emails_clean(email["to"])
-            cc = get_emails_clean(email["cc"])
-            subject = re.sub('[\n\t\r]', ' -- ', str(email["subject"]))
-            contents = get_content(email)
+            row = []
+            if not negative_or_empty(os.getenv("DATE")):
+                date = get_date(email["date"],
+                                os.getenv("DATE_FORMAT"),
+                                os.getenv("UTC"))
+                row.append(date)
+            if not negative_or_empty(os.getenv("SENT_FROM")):
+                sent_from = get_emails_clean(email["from"])
+                row.append(", ".join(sent_from))
 
-            # apply rules to default content
-            row = rules.apply_rules(
-                date, sent_from, sent_to, cc, subject, contents, owners, blacklist_domains, combine_to_cc)
+            if not negative_or_empty(os.getenv("SENT_TO")):
+                sent_to = get_emails_clean(email["to"])
+                row.append(", ".join(sent_to))
 
+            if not negative_or_empty(os.getenv("CC")):
+                cc = get_emails_clean(email["cc"])
+                row.append(", ".join(cc))
+
+            if not negative_or_empty(os.getenv("SUBJECT")):
+                subject = re.sub('[\n\t\r]', ' -- ', str(email["subject"]))
+                if not negative_or_empty(os.getenv("SUBJECT_PREPEND")):
+                    subject = os.getenv("SUBJECT_PREPEND") + subject
+                row.append(subject)
+
+            if not negative_or_empty(os.getenv("BODY")):
+                body = get_content(email)
+                row.append(body)
+
+            # date, sent_from, sent_to, cc, subject, contents, owners, blacklist_domains, combine_to_cc
+            # ["flagged", "date", "description", "from", "to", "cc", "subject", "content", "time (minutes)"]
             # write the row
             writer.writerow(row)
             row_written += 1
@@ -156,8 +182,9 @@ if __name__ == '__main__':
         # report
         report = "generated " + export_file_name + \
             " for " + str(row_written) + " messages"
-        report += " (" + str(rules.cant_convert_count) + " could not convert; "
-        report += str(rules.blacklist_count) + " blacklisted)"
+        report += " (" + os.getenv("CANT_CONVERT_COUNT") + \
+            " could not convert; "
+        report += os.getenv("BLACKLIST_COUNT") + " blacklisted)"
         print(report)
 
         export_file.close()
